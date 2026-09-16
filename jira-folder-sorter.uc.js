@@ -1,8 +1,7 @@
 // ==UserScript==
 // @name        Jira Folder Sorter
 // @description Automatically organizes Jira tabs into native Zen folders.
-//              Uses Zen's own folder implementation. No Jira API required.
-// @version     1.1.0
+// @version     1.2.0
 // ==/UserScript==
 
 (function () {
@@ -12,41 +11,23 @@
     return;
   }
 
-  /*
-   * ================================================================
-   * SETTINGS
-   * ================================================================
-   */
-
   const PREF_ENABLED =
     "extensions.jira-folder-sorter.enabled";
 
   const PREF_BASE_URL =
     "extensions.jira-folder-sorter.jira-base-url";
 
-
-  /*
-   * ================================================================
-   * CONSTANTS
-   * ================================================================
-   */
-
   const LOG_PREFIX = "[Jira Folder Sorter]";
 
   /*
-   * We mark folders created by this script so that we never
-   * interfere with folders you created manually.
+   * Folder names are intentionally NOT prefixed with "Jira:".
    */
-  const FOLDER_PREFIX = "Jira: ";
-
   const MAX_FOLDER_NAME_LENGTH = 70;
 
 
-  /*
-   * ================================================================
-   * LOGGING
-   * ================================================================
-   */
+  // ================================================================
+  // Logging
+  // ================================================================
 
   function log(...args) {
     console.log(LOG_PREFIX, ...args);
@@ -57,35 +38,30 @@
   }
 
 
-  /*
-   * ================================================================
-   * PREFERENCES
-   * ================================================================
-   */
+  // ================================================================
+  // Preferences
+  // ================================================================
 
   function getBoolPref(name, fallback) {
     try {
       return Services.prefs.getBoolPref(name, fallback);
-    } catch (e) {
+    } catch {
       return fallback;
     }
   }
 
   function getStringPref(name, fallback) {
     try {
-      const value = Services.prefs.getStringPref(name, fallback);
-      return value == null ? fallback : value;
-    } catch (e) {
+      return Services.prefs.getStringPref(name, fallback);
+    } catch {
       return fallback;
     }
   }
 
 
-  /*
-   * ================================================================
-   * JIRA URL
-   * ================================================================
-   */
+  // ================================================================
+  // Jira URL
+  // ================================================================
 
   function parseJiraUrl(urlString, baseUrlString) {
     if (!urlString || !baseUrlString) {
@@ -98,13 +74,10 @@
     try {
       url = new URL(urlString);
       base = new URL(baseUrlString);
-    } catch (e) {
+    } catch {
       return null;
     }
 
-    /*
-     * Only accept our configured Jira instance.
-     */
     if (url.hostname !== base.hostname) {
       return null;
     }
@@ -113,9 +86,6 @@
       /\/browse\/([A-Z][A-Z0-9_]*-\d+)/i
     );
 
-    /*
-     * Some Jira URLs use selectedIssue instead.
-     */
     if (!match) {
       match = url.search.match(
         /[?&]selectedIssue=([A-Z][A-Z0-9_]*-\d+)/i
@@ -135,44 +105,26 @@
   }
 
 
-  /*
-   * ================================================================
-   * TAB TITLE
-   * ================================================================
-   */
+  // ================================================================
+  // Jira title
+  // ================================================================
 
   function getIssueTitle(tab, issueKey) {
-    if (!tab) {
-      return issueKey;
-    }
-
     let title = "";
 
     try {
       title = tab.linkedBrowser?.contentTitle || "";
-    } catch (e) {
-      // Ignore.
-    }
+    } catch {}
 
     if (!title) {
       try {
         title = tab.label || "";
-      } catch (e) {
-        // Ignore.
-      }
+      } catch {}
     }
 
     if (!title) {
       return issueKey;
     }
-
-    /*
-     * Jira commonly produces titles such as:
-     *
-     *   ABC-123 Login redesign
-     *   Login redesign - ABC-123
-     *   Login redesign | Jira
-     */
 
     title = title
       .replace(/\s*[-|]\s*Jira.*$/i, "")
@@ -181,7 +133,10 @@
 
     title = title
       .replace(
-        new RegExp(`\\b${escapeRegExp(issueKey)}\\b`, "i"),
+        new RegExp(
+          `\\b${escapeRegExp(issueKey)}\\b`,
+          "i"
+        ),
         ""
       )
       .replace(/^[\s\-:|]+/, "")
@@ -193,99 +148,52 @@
 
 
   function escapeRegExp(value) {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return value.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&"
+    );
   }
 
 
-  /*
-   * ================================================================
-   * FOLDER NAME
-   * ================================================================
-   *
-   * We intentionally don't try to determine Epic/Story through Jira's
-   * API.
-   *
-   * Without the API, the browser does not know the actual Jira parent
-   * relationship from the URL alone.
-   *
-   * Therefore:
-   *
-   *   first issue -> creates the folder
-   *
-   *   issues opened from that Jira tab -> inherit the folder
-   *
-   * This works particularly well for Epic -> Story workflows.
-   */
+  // ================================================================
+  // Folder name
+  // ================================================================
 
   function makeFolderName(issueKey, title) {
     let name = `${issueKey} ${title}`.trim();
 
     if (name.length > MAX_FOLDER_NAME_LENGTH) {
       name =
-        name.slice(0, MAX_FOLDER_NAME_LENGTH - 3) +
-        "...";
+        name.slice(
+          0,
+          MAX_FOLDER_NAME_LENGTH - 3
+        ) + "...";
     }
 
-    return `${FOLDER_PREFIX}${name}`;
+    return name;
   }
 
 
-  /*
-   * ================================================================
-   * REAL ZEN FOLDERS
-   * ================================================================
-   */
+  // ================================================================
+  // Zen folder detection
+  // ================================================================
 
   function getZenFolders() {
-    /*
-     * Zen folders are actual <zen-folder> elements.
-     *
-     * This is intentionally NOT:
-     *
-     *   gBrowser.tabGroups
-     *
-     * because that also contains ordinary Firefox tab groups.
-     */
-
-    try {
-      return Array.from(
-        document.querySelectorAll("zen-folder")
-      );
-    } catch (e) {
-      warn("Unable to enumerate Zen folders:", e);
-      return [];
-    }
+    return Array.from(
+      document.querySelectorAll("zen-folder")
+    );
   }
 
 
   function isZenFolder(folder) {
-    return !!(
-      folder &&
-      folder.isZenFolder
-    );
+    return !!folder?.isZenFolder;
   }
 
 
-  function isOurFolder(folder) {
-    if (!isZenFolder(folder)) {
-      return false;
-    }
-
-    return (
-      typeof folder.label === "string" &&
-      folder.label.startsWith(FOLDER_PREFIX)
-    );
-  }
-
-
-  function findOurFolder(label) {
-    if (!label) {
-      return null;
-    }
-
+  function findFolder(label) {
     for (const folder of getZenFolders()) {
       if (
-        isOurFolder(folder) &&
+        isZenFolder(folder) &&
         folder.label === label
       ) {
         return folder;
@@ -296,26 +204,15 @@
   }
 
 
-  /*
-   * ================================================================
-   * FIND OPENER
-   * ================================================================
-   */
+  // ================================================================
+  // Opener detection
+  // ================================================================
 
   function getOpenerTab(tab) {
-    if (!tab) {
-      return null;
-    }
-
     try {
-      const browser = tab.linkedBrowser;
-
-      if (!browser) {
-        return null;
-      }
-
       const openerBrowser =
-        browser.frameLoader
+        tab.linkedBrowser
+          ?.frameLoader
           ?.browsingContext
           ?.opener
           ?.top
@@ -328,17 +225,13 @@
       return gBrowser.getTabForBrowser(
         openerBrowser
       );
-    } catch (e) {
+    } catch {
       return null;
     }
   }
 
 
-  /*
-   * Walk through the opener chain looking for one of our
-   * real Zen folders.
-   */
-  function findInheritedFolder(tab) {
+  function findParentFolder(tab) {
     const visited = new Set();
 
     let current = getOpenerTab(tab);
@@ -349,14 +242,11 @@
     ) {
       visited.add(current);
 
-      const group = current.group;
-
       if (
-        group &&
-        isZenFolder(group) &&
-        isOurFolder(group)
+        current.group &&
+        isZenFolder(current.group)
       ) {
-        return group;
+        return current.group;
       }
 
       current = getOpenerTab(current);
@@ -366,90 +256,84 @@
   }
 
 
-  /*
-   * ================================================================
-   * CREATE REAL ZEN FOLDER
-   * ================================================================
-   */
+  // ================================================================
+  // REAL ZEN FOLDER CREATION
+  // ================================================================
 
-  function createZenFolder(tab, label) {
-    if (!tab || tab.closing) {
-      return null;
-    }
-
-    /*
-     * This is Zen's own folder manager.
-     *
-     * Zen's source uses:
-     *
-     *   gZenFolders.createFolder(tabs, options)
-     *
-     * to create folders.
-     */
-
+  function createFolder(tab, label) {
     if (
       typeof gZenFolders === "undefined" ||
       !gZenFolders ||
       typeof gZenFolders.createFolder !== "function"
     ) {
       warn(
-        "gZenFolders.createFolder() is not available."
+        "Zen folder API is unavailable."
       );
 
       return null;
     }
 
     try {
+      /*
+       * IMPORTANT:
+       *
+       * This intentionally mirrors Zen's own
+       * context-menu implementation.
+       *
+       * We do NOT pass workspaceId.
+       * We do NOT manually create a zen-folder.
+       * We do NOT manually create an empty tab.
+       * We do NOT manually pin anything.
+       *
+       * Zen does all of that.
+       */
+
       const folder =
         gZenFolders.createFolder(
           [tab],
           {
-            label,
-            workspaceId:
-              gZenWorkspaces.activeWorkspace,
-
-            /*
-             * Put the folder before the normal
-             * pinned-tabs separator, just like Zen's
-             * own new-folder action.
-             */
-            insertBefore:
-              gZenWorkspaces
-                .pinnedTabsContainer
-                ?.querySelector(
-                  ".pinned-tabs-container-separator"
-                ),
-
-            /*
-             * Do NOT open Zen's rename dialog.
-             * We already know the name.
-             */
             renameFolder: false,
-
-            /*
-             * Persist the folder like a normal
-             * user-created folder.
-             */
-            saveOnWindowClose: true,
           }
         );
 
       if (!folder) {
         warn(
-          `Zen failed to create folder "${label}".`
+          "Zen returned no folder."
         );
 
         return null;
       }
 
+      /*
+       * Zen defaults the label to "New Folder".
+       * Set the label using the actual Zen folder object.
+       */
+      folder.label = label;
+
+      /*
+       * Force the folder state to be persisted immediately.
+       */
+      try {
+        for (const folderTab of folder.tabs) {
+          if (
+            folderTab.linkedBrowser
+          ) {
+            gBrowser.TabStateFlusher.flush(
+              folderTab.linkedBrowser
+            );
+          }
+        }
+      } catch {}
+
       log(
-        `Created real Zen folder "${label}".`
+        `Created Zen folder "${label}".`
       );
 
       return folder;
+
     } catch (e) {
       warn(
-        `Failed creating Zen folder "${label}":`,
+        "Zen folder creation failed:",
         e
       );
 
@@ -458,52 +342,34 @@
   }
 
 
-  /*
-   * ================================================================
-   * ADD TAB TO REAL ZEN FOLDER
-   * ================================================================
-   */
+  // ================================================================
+  // Add tab to existing Zen folder
+  // ================================================================
 
-  function addTabToZenFolder(
-    folder,
-    tab
-  ) {
+  function addToFolder(folder, tab) {
     if (
       !folder ||
       !tab ||
-      tab.closing
+      !isZenFolder(folder)
     ) {
-      return false;
-    }
-
-    if (!isZenFolder(folder)) {
-      warn(
-        "Refusing to add tab to non-Zen folder."
-      );
-
       return false;
     }
 
     try {
       /*
-       * This is exactly what Zen's own
-       * "Move to Folder" action does.
-       *
-       * Zen's source:
-       *
-       *   group.addTabs(tabs)
+       * This is the exact operation Zen's own
+       * "Move to Folder" context menu uses.
        */
-
       folder.addTabs([tab]);
 
       log(
-        `Added "${tab.label}" to "${folder.label}".`
+        `Moved "${tab.label}" into "${folder.label}".`
       );
 
       return true;
     } catch (e) {
       warn(
-        `Failed adding "${tab.label}" to "${folder.label}":`,
+        "Could not add tab to Zen folder:",
         e
       );
 
@@ -512,27 +378,21 @@
   }
 
 
-  /*
-   * ================================================================
-   * ORGANIZE TAB
-   * ================================================================
-   */
+  // ================================================================
+  // Organize Jira tab
+  // ================================================================
 
-  function organizeTab(
-    tab,
-    issueKey
-  ) {
+  function organizeTab(tab, issueKey) {
     if (
       !tab ||
-      tab.closing ||
-      !issueKey
+      tab.closing
     ) {
       return;
     }
 
     /*
-     * If the tab is already inside a real Zen folder,
-     * don't touch it.
+     * Don't interfere with anything already
+     * inside a Zen folder.
      */
     if (
       tab.group &&
@@ -542,8 +402,8 @@
     }
 
     /*
-     * If the user manually put the tab into a normal
-     * tab group, don't interfere.
+     * Don't interfere with ordinary tab groups
+     * created by the user.
      */
     if (
       tab.group &&
@@ -552,38 +412,29 @@
       return;
     }
 
-    /*
-     * ------------------------------------------------------------
-     * 1. Try to inherit the folder from the Jira tab that
-     *    opened this tab.
-     * ------------------------------------------------------------
-     */
 
-    const inheritedFolder =
-      findInheritedFolder(tab);
+    // --------------------------------------------------------------
+    // Try to inherit the opener's folder.
+    // --------------------------------------------------------------
 
-    if (inheritedFolder) {
+    const parentFolder =
+      findParentFolder(tab);
+
+    if (parentFolder) {
       if (
-        addTabToZenFolder(
-          inheritedFolder,
+        addToFolder(
+          parentFolder,
           tab
         )
       ) {
-        log(
-          `${issueKey} inherited folder "${inheritedFolder.label}".`
-        );
-
         return;
       }
     }
 
-    /*
-     * ------------------------------------------------------------
-     * 2. No parent folder was found.
-     *
-     *    Create/reuse a folder based on this issue.
-     * ------------------------------------------------------------
-     */
+
+    // --------------------------------------------------------------
+    // Otherwise create/reuse a folder for this issue.
+    // --------------------------------------------------------------
 
     const title =
       getIssueTitle(
@@ -598,13 +449,10 @@
       );
 
     let folder =
-      findOurFolder(folderName);
+      findFolder(folderName);
 
-    /*
-     * Existing folder.
-     */
     if (folder) {
-      addTabToZenFolder(
+      addToFolder(
         folder,
         tab
       );
@@ -612,28 +460,16 @@
       return;
     }
 
-    /*
-     * New real Zen folder.
-     */
-    folder =
-      createZenFolder(
-        tab,
-        folderName
-      );
-
-    if (!folder) {
-      warn(
-        `Could not organize Jira issue ${issueKey}.`
-      );
-    }
+    createFolder(
+      tab,
+      folderName
+    );
   }
 
 
-  /*
-   * ================================================================
-   * HANDLE JIRA TAB
-   * ================================================================
-   */
+  // ================================================================
+  // Handle Jira tab
+  // ================================================================
 
   async function handleTab(tab) {
     if (
@@ -693,14 +529,10 @@
     }
 
     /*
-     * Jira is a SPA.
-     *
-     * Give it a moment to update the title after
-     * navigation.
+     * Jira is a SPA, so wait for the title to settle.
      */
-    await new Promise(
-      resolve =>
-        setTimeout(resolve, 600)
+    await new Promise(resolve =>
+      setTimeout(resolve, 700)
     );
 
     if (tab.closing) {
@@ -714,11 +546,9 @@
   }
 
 
-  /*
-   * ================================================================
-   * NAVIGATION LISTENER
-   * ================================================================
-   */
+  // ================================================================
+  // Navigation listener
+  // ================================================================
 
   function attachListener(tab) {
     if (!tab) {
@@ -754,25 +584,16 @@
           return;
         }
 
-        /*
-         * Let Jira finish rendering.
-         */
         setTimeout(
-          () => {
-            handleTab(tab);
-          },
+          () => handleTab(tab),
           500
         );
       },
 
       onStateChange() {},
-
       onProgressChange() {},
-
       onStatusChange() {},
-
       onSecurityChange() {},
-
       onContentBlockingEvent() {},
     };
 
@@ -792,28 +613,25 @@
             browser.removeProgressListener(
               listener
             );
-          } catch (e) {
-            // Browser already destroyed.
-          }
+          } catch {}
 
           delete tab._jiraFolderSorterListener;
         },
         { once: true }
       );
+
     } catch (e) {
       warn(
-        "Could not attach Jira listener:",
+        "Could not attach listener:",
         e
       );
     }
   }
 
 
-  /*
-   * ================================================================
-   * TAB OPEN
-   * ================================================================
-   */
+  // ================================================================
+  // New tab
+  // ================================================================
 
   function onTabOpen(event) {
     const tab =
@@ -825,104 +643,76 @@
 
     attachListener(tab);
 
-    /*
-     * Handle tabs that were opened directly
-     * with an already-loaded URL.
-     */
     if (
-      tab.linkedBrowser &&
-      tab.linkedBrowser.currentURI &&
+      tab.linkedBrowser?.currentURI &&
       tab.linkedBrowser.currentURI.spec !==
         "about:blank"
     ) {
       setTimeout(
-        () => {
-          handleTab(tab);
-        },
+        () => handleTab(tab),
         700
       );
     }
   }
 
 
-  /*
-   * ================================================================
-   * INITIALIZATION
-   * ================================================================
-   */
+  // ================================================================
+  // Init
+  // ================================================================
 
   function init() {
     if (
       !gBrowser ||
       !gBrowser.tabContainer
     ) {
-      warn(
-        "gBrowser is not ready."
-      );
-
       return;
     }
 
-    /*
-     * Make sure Zen's folder manager exists.
-     */
-    if (
-      typeof gZenFolders ===
-        "undefined" ||
-      !gZenFolders
-    ) {
-      warn(
-        "gZenFolders is not available yet."
-      );
-    } else {
-      log(
-        "Zen folder manager detected."
-      );
-    }
+    log(
+      "Jira Folder Sorter starting..."
+    );
+
+    log(
+      "gZenFolders:",
+      typeof gZenFolders !== "undefined"
+        ? "available"
+        : "NOT AVAILABLE"
+    );
 
     gBrowser.tabContainer.addEventListener(
       "TabOpen",
       onTabOpen
     );
 
-    /*
-     * Existing tabs.
-     */
     for (
       const tab of gBrowser.tabs
     ) {
       attachListener(tab);
 
       if (
-        tab.linkedBrowser &&
-        tab.linkedBrowser.currentURI &&
+        tab.linkedBrowser?.currentURI &&
         tab.linkedBrowser.currentURI.spec !==
           "about:blank"
       ) {
         setTimeout(
-          () => {
-            handleTab(tab);
-          },
+          () => handleTab(tab),
           700
         );
       }
     }
 
     log(
-      "Jira Folder Sorter initialized."
+      "initialized."
     );
   }
 
 
-  /*
-   * ================================================================
-   * WAIT FOR ZEN STARTUP
-   * ================================================================
-   */
+  // ================================================================
+  // Wait for Zen startup
+  // ================================================================
 
   if (
-    typeof gBrowserInit !==
-      "undefined" &&
+    typeof gBrowserInit !== "undefined" &&
     gBrowserInit.delayedStartupFinished
   ) {
     init();
@@ -931,9 +721,7 @@
       subject,
       topic
     ) => {
-      if (
-        subject === window
-      ) {
+      if (subject === window) {
         Services.obs.removeObserver(
           observer,
           topic
