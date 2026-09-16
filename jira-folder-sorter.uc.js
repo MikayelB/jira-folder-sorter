@@ -1,115 +1,54 @@
 // ==UserScript==
+	
 // @name        Jira Folder Sorter
+	
 // @description Automatically organizes Jira tabs into native Zen folders.
-// @version     1.2.0
+	
+// @version     1.3.0
+	
 // ==/UserScript==
+	
 
 (function () {
   "use strict";
 
-  if (location.href !== "chrome://browser/content/browser.xhtml") {
-    return;
-  }
+  const PREF_ENABLED = "extensions.jira-folder-sorter.enabled";
+  const PREF_BASE_URL = "extensions.jira-folder-sorter.jira-base-url";
 
-  const PREF_ENABLED =
-    "extensions.jira-folder-sorter.enabled";
+  const folderByIssue = new Map();
+  const managedFolders = new Set();
 
-  const PREF_BASE_URL =
-    "extensions.jira-folder-sorter.jira-base-url";
-
-  const LOG_PREFIX = "[Jira Folder Sorter]";
-
-  /*
-   * Folder names are intentionally NOT prefixed with "Jira:".
-   */
-  const MAX_FOLDER_NAME_LENGTH = 70;
-
-
-  // ================================================================
-  // Logging
-  // ================================================================
-
-  function log(...args) {
-    console.log(LOG_PREFIX, ...args);
-  }
-
-  function warn(...args) {
-    console.warn(LOG_PREFIX, ...args);
-  }
-
-
-  // ================================================================
-  // Preferences
-  // ================================================================
-
-  function getBoolPref(name, fallback) {
+  function isEnabled() {
     try {
-      return Services.prefs.getBoolPref(name, fallback);
+      return Services.prefs.getBoolPref(PREF_ENABLED, true);
     } catch {
-      return fallback;
+      return true;
     }
   }
 
-  function getStringPref(name, fallback) {
+  function getBaseUrl() {
     try {
-      return Services.prefs.getStringPref(name, fallback);
+      return Services.prefs.getCharPref(PREF_BASE_URL, "").replace(/\/+$/, "");
     } catch {
-      return fallback;
+      return "";
     }
   }
 
-
-  // ================================================================
-  // Jira URL
-  // ================================================================
-
-  function parseJiraUrl(urlString, baseUrlString) {
-    if (!urlString || !baseUrlString) {
-      return null;
-    }
-
-    let url;
-    let base;
-
-    try {
-      url = new URL(urlString);
-      base = new URL(baseUrlString);
-    } catch {
-      return null;
-    }
-
-    if (url.hostname !== base.hostname) {
-      return null;
-    }
-
-    let match = url.pathname.match(
-      /\/browse\/([A-Z][A-Z0-9_]*-\d+)/i
-    );
-
-    if (!match) {
-      match = url.search.match(
-        /[?&]selectedIssue=([A-Z][A-Z0-9_]*-\d+)/i
-      );
-    }
-
-    if (!match) {
-      return null;
-    }
-
-    const issueKey = match[1].toUpperCase();
-
-    return {
-      issueKey,
-      projectKey: issueKey.split("-")[0],
-    };
+  function isJiraUrl(url) {
+    const base = getBaseUrl();
+    return !!(base && url && url.startsWith(base + "/browse/"));
   }
 
+  function getIssueKey(url) {
+    if (!url) return null;
 
-  // ================================================================
-  // Jira title
-  // ================================================================
+    const match = url.match(/\/browse\/([A-Z][A-Z0-9]+-\d+)/i);
+    return match ? match[1].toUpperCase() : null;
+  }
 
-  function getIssueTitle(tab, issueKey) {
+  function getIssueSummary(tab) {
+    if (!tab) return null;
+
     let title = "";
 
     try {
@@ -117,85 +56,90 @@
     } catch {}
 
     if (!title) {
-      try {
-        title = tab.label || "";
-      } catch {}
+      title = tab.label || "";
     }
 
-    if (!title) {
-      return issueKey;
-    }
+    if (!title) return null;
 
     title = title
-      .replace(/\s*[-|]\s*Jira.*$/i, "")
-      .replace(/\s*[-|]\s*Atlassian.*$/i, "")
+      .replace(/\s*[-|–—]\s*Jira\s*$/i, "")
+      .replace(/\s+Jira\s*$/i, "")
       .trim();
 
-    title = title
-      .replace(
-        new RegExp(
-          `\\b${escapeRegExp(issueKey)}\\b`,
-          "i"
-        ),
+    const key = getIssueKey(tab.linkedBrowser?.currentURI?.spec);
+
+    if (key) {
+      title = title.replace(
+        new RegExp("^" + key + "\\s*[-|:]?\\s*", "i"),
         ""
-      )
-      .replace(/^[\s\-:|]+/, "")
-      .replace(/[\s\-:|]+$/, "")
-      .trim();
-
-    return title || issueKey;
-  }
-
-
-  function escapeRegExp(value) {
-    return value.replace(
-      /[.*+?^${}()|[\]\\]/g,
-      "\\$&"
-    );
-  }
-
-
-  // ================================================================
-  // Folder name
-  // ================================================================
-
-  function makeFolderName(issueKey, title) {
-    let name = `${issueKey} ${title}`.trim();
-
-    if (name.length > MAX_FOLDER_NAME_LENGTH) {
-      name =
-        name.slice(
-          0,
-          MAX_FOLDER_NAME_LENGTH - 3
-        ) + "...";
+      );
     }
 
-    return name;
+    if (!title || /^Jira$/i.test(title)) {
+      return null;
+    }
+
+    return title;
   }
 
-
-  // ================================================================
-  // Zen folder detection
-  // ================================================================
-
-  function getZenFolders() {
-    return Array.from(
-      document.querySelectorAll("zen-folder")
-    );
+  function getTabUrl(tab) {
+    try {
+      return (
+        tab.linkedBrowser?.currentURI?.spec ||
+        tab.linkedBrowser?.currentURI?.asciiSpec ||
+        ""
+      );
+    } catch {
+      return "";
+    }
   }
 
+  function getFolderForTab(tab) {
+    if (!tab) return null;
 
-  function isZenFolder(folder) {
-    return !!folder?.isZenFolder;
+    const group = tab.group;
+
+    return group?.isZenFolder ? group : null;
   }
 
+  function findOpenerFolder(tab) {
+    const visited = new Set();
+    let current = tab;
 
-  function findFolder(label) {
-    for (const folder of getZenFolders()) {
-      if (
-        isZenFolder(folder) &&
-        folder.label === label
-      ) {
+    while (current) {
+      if (visited.has(current)) break;
+
+      visited.add(current);
+
+      const folder = getFolderForTab(current);
+
+      if (folder && managedFolders.has(folder)) {
+        return folder;
+      }
+
+      current = current.openerTab || current.ownerTab || null;
+    }
+
+    return null;
+  }
+
+  function findExistingIssueFolder(issueKey) {
+    if (!issueKey) return null;
+
+    const cached = folderByIssue.get(issueKey);
+
+    if (cached?.isConnected && cached.isZenFolder) {
+      return cached;
+    }
+
+    folderByIssue.delete(issueKey);
+
+    for (const folder of document.querySelectorAll("zen-folder")) {
+      if (!folder.isZenFolder) continue;
+
+      if (folder.getAttribute("data-jira-issue") === issueKey) {
+        folderByIssue.set(issueKey, folder);
+        managedFolders.add(folder);
         return folder;
       }
     }
@@ -203,538 +147,193 @@
     return null;
   }
 
+  function createJiraFolder(tab, issueKey) {
+    if (!gZenFolders || !tab) return null;
 
-  // ================================================================
-  // Opener detection
-  // ================================================================
+    const summary = getIssueSummary(tab);
+    const label = summary ? `${issueKey} ${summary}` : issueKey;
 
-  function getOpenerTab(tab) {
-    try {
-      const openerBrowser =
-        tab.linkedBrowser
-          ?.frameLoader
-          ?.browsingContext
-          ?.opener
-          ?.top
-          ?.embedderElement;
+    const folder = gZenFolders.createFolder([tab], {
+      label,
+      renameFolder: false,
+      saveOnWindowClose: false,
+    });
 
-      if (!openerBrowser) {
-        return null;
-      }
+    if (!folder) return null;
 
-      return gBrowser.getTabForBrowser(
-        openerBrowser
-      );
-    } catch {
-      return null;
-    }
+    folder.setAttribute("data-jira-folder", "true");
+    folder.setAttribute("data-jira-issue", issueKey);
+
+    managedFolders.add(folder);
+    folderByIssue.set(issueKey, folder);
+
+    return folder;
   }
 
+  function moveIntoFolder(tab, folder) {
+    if (!tab || !folder || !folder.isZenFolder) return;
 
-  function findParentFolder(tab) {
-    const visited = new Set();
+    if (tab.group === folder) return;
 
-    let current = getOpenerTab(tab);
-
-    while (
-      current &&
-      !visited.has(current)
-    ) {
-      visited.add(current);
-
-      if (
-        current.group &&
-        isZenFolder(current.group)
-      ) {
-        return current.group;
-      }
-
-      current = getOpenerTab(current);
-    }
-
-    return null;
+    folder.addTabs([tab]);
   }
 
+  function processTab(tab) {
+    if (!isEnabled() || !tab) return;
 
-  // ================================================================
-  // REAL ZEN FOLDER CREATION
-  // ================================================================
+    const url = getTabUrl(tab);
 
-  function createFolder(tab, label) {
-    if (
-      typeof gZenFolders === "undefined" ||
-      !gZenFolders ||
-      typeof gZenFolders.createFolder !== "function"
-    ) {
-      warn(
-        "Zen folder API is unavailable."
-      );
+    if (!isJiraUrl(url)) return;
 
-      return null;
-    }
+    const issueKey = getIssueKey(url);
 
-    try {
-      /*
-       * IMPORTANT:
-       *
-       * This intentionally mirrors Zen's own
-       * context-menu implementation.
-       *
-       * We do NOT pass workspaceId.
-       * We do NOT manually create a zen-folder.
-       * We do NOT manually create an empty tab.
-       * We do NOT manually pin anything.
-       *
-       * Zen does all of that.
-       */
+    if (!issueKey) return;
 
-      const folder =
-        gZenFolders.createFolder(
-          [tab],
-          {
-            renameFolder: false,
-          }
-        );
+    const openerFolder = findOpenerFolder(tab);
 
-      if (!folder) {
-        warn(
-          "Zen returned no folder."
-        );
-
-        return null;
-      }
-
-      /*
-       * Zen defaults the label to "New Folder".
-       * Set the label using the actual Zen folder object.
-       */
-      folder.label = label;
-
-      /*
-       * Force the folder state to be persisted immediately.
-       */
-      try {
-        for (const folderTab of folder.tabs) {
-          if (
-            folderTab.linkedBrowser
-          ) {
-            gBrowser.TabStateFlusher.flush(
-              folderTab.linkedBrowser
-            );
-          }
-        }
-      } catch {}
-
-      log(
-        `Created Zen folder "${label}".`
-      );
-
-      return folder;
-
-    } catch (e) {
-      warn(
-        "Zen folder creation failed:",
-        e
-      );
-
-      return null;
-    }
-  }
-
-
-  // ================================================================
-  // Add tab to existing Zen folder
-  // ================================================================
-
-  function addToFolder(folder, tab) {
-    if (
-      !folder ||
-      !tab ||
-      !isZenFolder(folder)
-    ) {
-      return false;
-    }
-
-    try {
-      /*
-       * This is the exact operation Zen's own
-       * "Move to Folder" context menu uses.
-       */
-      folder.addTabs([tab]);
-
-      log(
-        `Moved "${tab.label}" into "${folder.label}".`
-      );
-
-      return true;
-    } catch (e) {
-      warn(
-        "Could not add tab to Zen folder:",
-        e
-      );
-
-      return false;
-    }
-  }
-
-
-  // ================================================================
-  // Organize Jira tab
-  // ================================================================
-
-  function organizeTab(tab, issueKey) {
-    if (
-      !tab ||
-      tab.closing
-    ) {
+    if (openerFolder) {
+      moveIntoFolder(tab, openerFolder);
       return;
     }
 
-    /*
-     * Don't interfere with anything already
-     * inside a Zen folder.
-     */
-    if (
-      tab.group &&
-      isZenFolder(tab.group)
-    ) {
+    const existingFolder = findExistingIssueFolder(issueKey);
+
+    if (existingFolder) {
+      moveIntoFolder(tab, existingFolder);
       return;
     }
 
-    /*
-     * Don't interfere with ordinary tab groups
-     * created by the user.
-     */
-    if (
-      tab.group &&
-      !isZenFolder(tab.group)
-    ) {
-      return;
-    }
+    const folder = createJiraFolder(tab, issueKey);
 
+    if (!folder) return;
 
-    // --------------------------------------------------------------
-    // Try to inherit the opener's folder.
-    // --------------------------------------------------------------
+    waitForJiraTitle(tab, folder, issueKey);
+  }
 
-    const parentFolder =
-      findParentFolder(tab);
+  function waitForJiraTitle(tab, folder, issueKey) {
+    let attempts = 0;
 
-    if (parentFolder) {
-      if (
-        addToFolder(
-          parentFolder,
-          tab
-        )
-      ) {
+    const update = () => {
+      if (!folder?.isConnected || !tab?.isConnected) return;
+
+      const summary = getIssueSummary(tab);
+
+      if (summary) {
+        folder.label = `${issueKey} ${summary}`;
         return;
       }
-    }
 
+      attempts++;
 
-    // --------------------------------------------------------------
-    // Otherwise create/reuse a folder for this issue.
-    // --------------------------------------------------------------
-
-    const title =
-      getIssueTitle(
-        tab,
-        issueKey
-      );
-
-    const folderName =
-      makeFolderName(
-        issueKey,
-        title
-      );
-
-    let folder =
-      findFolder(folderName);
-
-    if (folder) {
-      addToFolder(
-        folder,
-        tab
-      );
-
-      return;
-    }
-
-    createFolder(
-      tab,
-      folderName
-    );
-  }
-
-
-  // ================================================================
-  // Handle Jira tab
-  // ================================================================
-
-  async function handleTab(tab) {
-    if (
-      !getBoolPref(
-        PREF_ENABLED,
-        true
-      )
-    ) {
-      return;
-    }
-
-    if (
-      !tab ||
-      tab.closing
-    ) {
-      return;
-    }
-
-    const browser =
-      tab.linkedBrowser;
-
-    if (
-      !browser ||
-      !browser.currentURI
-    ) {
-      return;
-    }
-
-    const url =
-      browser.currentURI.spec;
-
-    if (
-      !url ||
-      url === "about:blank"
-    ) {
-      return;
-    }
-
-    const baseUrl =
-      getStringPref(
-        PREF_BASE_URL,
-        ""
-      );
-
-    if (!baseUrl) {
-      return;
-    }
-
-    const parsed =
-      parseJiraUrl(
-        url,
-        baseUrl
-      );
-
-    if (!parsed) {
-      return;
-    }
-
-    /*
-     * Jira is a SPA, so wait for the title to settle.
-     */
-    await new Promise(resolve =>
-      setTimeout(resolve, 700)
-    );
-
-    if (tab.closing) {
-      return;
-    }
-
-    organizeTab(
-      tab,
-      parsed.issueKey
-    );
-  }
-
-
-  // ================================================================
-  // Navigation listener
-  // ================================================================
-
-  function attachListener(tab) {
-    if (!tab) {
-      return;
-    }
-
-    const browser =
-      tab.linkedBrowser;
-
-    if (!browser) {
-      return;
-    }
-
-    if (
-      tab._jiraFolderSorterListener
-    ) {
-      return;
-    }
-
-    const listener = {
-      QueryInterface:
-        ChromeUtils.generateQI([
-          "nsIWebProgressListener",
-          "nsISupportsWeakReference",
-        ]),
-
-      onLocationChange(
-        webProgress
-      ) {
-        if (
-          !webProgress.isTopLevel
-        ) {
-          return;
-        }
-
-        setTimeout(
-          () => handleTab(tab),
-          500
-        );
-      },
-
-      onStateChange() {},
-      onProgressChange() {},
-      onStatusChange() {},
-      onSecurityChange() {},
-      onContentBlockingEvent() {},
+      if (attempts < 30) {
+        setTimeout(update, 500);
+      }
     };
 
-    try {
-      browser.addProgressListener(
-        listener,
-        Ci.nsIWebProgress.NOTIFY_LOCATION
-      );
+    update();
+  }
 
-      tab._jiraFolderSorterListener =
-        listener;
+  function cleanupEmptyFolder(folder) {
+    if (!folder || !folder.isConnected) return;
+    if (!managedFolders.has(folder)) return;
 
-      tab.addEventListener(
-        "TabClose",
-        () => {
-          try {
-            browser.removeProgressListener(
-              listener
-            );
-          } catch {}
+    const realTabs = folder.tabs.filter(
+      tab => !tab.hasAttribute("zen-empty-tab")
+    );
 
-          delete tab._jiraFolderSorterListener;
-        },
-        { once: true }
-      );
+    if (realTabs.length === 0) {
+      const issueKey = folder.getAttribute("data-jira-issue");
 
-    } catch (e) {
-      warn(
-        "Could not attach listener:",
-        e
-      );
+      if (issueKey) {
+        folderByIssue.delete(issueKey);
+      }
+
+      managedFolders.delete(folder);
+
+      try {
+        folder.delete();
+      } catch (error) {
+        console.error(
+          "[Jira Folder Sorter] Failed to delete folder:",
+          error
+        );
+      }
     }
   }
 
+  function onTabClose(event) {
+    const tab = event.target;
+    const folder = tab?.group;
 
-  // ================================================================
-  // New tab
-  // ================================================================
+    if (!folder?.isZenFolder) return;
+    if (!managedFolders.has(folder)) return;
+
+    setTimeout(() => {
+      cleanupEmptyFolder(folder);
+    }, 0);
+  }
 
   function onTabOpen(event) {
-    const tab =
-      event.target;
+    const tab = event.target;
 
-    if (!tab) {
-      return;
-    }
+    setTimeout(() => {
+      processTab(tab);
+    }, 100);
+  }
 
-    attachListener(tab);
+  function onTabSelect(event) {
+    const tab = event.target;
 
-    if (
-      tab.linkedBrowser?.currentURI &&
-      tab.linkedBrowser.currentURI.spec !==
-        "about:blank"
-    ) {
-      setTimeout(
-        () => handleTab(tab),
-        700
-      );
+    if (tab?.linkedBrowser?.currentURI?.spec) {
+      setTimeout(() => {
+        processTab(tab);
+      }, 100);
     }
   }
 
+  function onDOMContentLoaded(event) {
+    const browser = event.target;
 
-  // ================================================================
-  // Init
-  // ================================================================
+    if (!browser || browser !== gBrowser.selectedBrowser) {
+      return;
+    }
+
+    const tab = gBrowser.getTabForBrowser(browser);
+
+    if (!tab) return;
+
+    setTimeout(() => {
+      processTab(tab);
+    }, 100);
+  }
 
   function init() {
-    if (
-      !gBrowser ||
-      !gBrowser.tabContainer
-    ) {
-      return;
+    if (!gBrowser) return;
+
+    console.log("[Jira Folder Sorter] initialized");
+
+    gBrowser.tabContainer.addEventListener("TabOpen", onTabOpen);
+    gBrowser.tabContainer.addEventListener("TabClose", onTabClose);
+    gBrowser.tabContainer.addEventListener("TabSelect", onTabSelect);
+
+    gBrowser.addEventListener(
+      "DOMContentLoaded",
+      onDOMContentLoaded,
+      true
+    );
+
+    for (const tab of gBrowser.tabs) {
+      setTimeout(() => processTab(tab), 500);
     }
-
-    log(
-      "Jira Folder Sorter starting..."
-    );
-
-    log(
-      "gZenFolders:",
-      typeof gZenFolders !== "undefined"
-        ? "available"
-        : "NOT AVAILABLE"
-    );
-
-    gBrowser.tabContainer.addEventListener(
-      "TabOpen",
-      onTabOpen
-    );
-
-    for (
-      const tab of gBrowser.tabs
-    ) {
-      attachListener(tab);
-
-      if (
-        tab.linkedBrowser?.currentURI &&
-        tab.linkedBrowser.currentURI.spec !==
-          "about:blank"
-      ) {
-        setTimeout(
-          () => handleTab(tab),
-          700
-        );
-      }
-    }
-
-    log(
-      "initialized."
-    );
   }
 
-
-  // ================================================================
-  // Wait for Zen startup
-  // ================================================================
-
-  if (
-    typeof gBrowserInit !== "undefined" &&
-    gBrowserInit.delayedStartupFinished
-  ) {
+  if (gBrowserInit?.delayedStartupFinished) {
     init();
   } else {
-    const observer = (
-      subject,
-      topic
-    ) => {
-      if (subject === window) {
-        Services.obs.removeObserver(
-          observer,
-          topic
-        );
-
-        init();
-      }
-    };
-
-    Services.obs.addObserver(
-      observer,
-      "browser-delayed-startup-finished"
+    window.addEventListener(
+      "browser-delayed-startup-finished",
+      () => init(),
+      { once: true }
     );
   }
-
 })();
