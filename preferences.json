@@ -1,0 +1,63 @@
+[
+  {
+    "property": "extensions.jira-folder-sorter.enabled",
+    "label": "Enable Jira Folder Sorter",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "extensions.jira-folder-sorter.jira-base-url",
+    "label": "Jira base URL (e.g. https://yourcompany.atlassian.net)",
+    "type": "string",
+    "placeholder": "https://yourcompany.atlassian.net",
+    "defaultValue": ""
+  },
+  {
+    "property": "extensions.jira-folder-sorter.group-by",
+    "label": "Group tabs by (epic/story need email+token below)",
+    "type": "dropdown",
+    "options": [
+      "project",
+      "epic",
+      "story"
+    ],
+    "defaultValue": "project"
+  },
+  {
+    "property": "extensions.jira-folder-sorter.group-color",
+    "label": "Folder color",
+    "type": "dropdown",
+    "options": [
+      "blue",
+      "purple",
+      "cyan",
+      "orange",
+      "yellow",
+      "pink",
+      "green",
+      "gray",
+      "red"
+    ],
+    "defaultValue": "blue"
+  },
+  {
+    "property": "extensions.jira-folder-sorter.jira-email",
+    "label": "Jira account email (only needed for 'epic' grouping, Jira Cloud)",
+    "type": "string",
+    "placeholder": "you@company.com",
+    "defaultValue": "",
+    "disabledOn": {
+      "extensions.jira-folder-sorter.group-by": "project"
+    }
+  },
+  {
+    "property": "extensions.jira-folder-sorter.jira-api-token",
+    "label": "Jira API token (only needed for 'epic' grouping - stored in plain text, see README)",
+    "type": "string",
+    "placeholder": "paste API token here",
+    "defaultValue": "",
+    "disabledOn": {
+      "extensions.jira-folder-sorter.group-by": "project"
+    }
+  }
+]

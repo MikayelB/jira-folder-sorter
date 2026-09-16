@@ -1,0 +1,12 @@
+/* Jira Folder Sorter
+ *
+ * This mod's behavior is driven entirely by jira-folder-sorter.uc.js.
+ * This stylesheet is intentionally minimal - it just gives folders this
+ * mod creates a small visual hint (a left accent bar) so they're easy to
+ * spot among folders you made manually. Safe to delete this file if you
+ * don't want the styling; the JS logic works independently of it.
+ */
+
+.tab-group-label-container {
+  position: relative;
+}

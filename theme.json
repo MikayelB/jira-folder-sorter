@@ -1,0 +1,30 @@
+{
+  "id": "jira-folder-sorter",
+  "name": "Jira Folder Sorter",
+  "description": "Automatically files Jira issue tabs into Zen tab folders by project or epic",
+  "scripts": {
+    "jira-folder-sorter.uc.js": {
+      "include": [
+        "chrome://browser/content/browser.xhtml"
+      ]
+    }
+  },
+  "homepage": "https://github.com/YOUR-USERNAME/jira-folder-sorter",
+  "preferences": "preferences.json",
+  "style": {
+    "chrome": "userChrome.css"
+  },
+  "readme": "README.md",
+  "author": "YOUR-USERNAME",
+  "version": "0.1.0",
+  "tags": [
+    "Zen Browser",
+    "Jira",
+    "Tab Groups",
+    "Tab Folders",
+    "Productivity"
+  ],
+  "createdAt": "2026-09-16",
+  "updatedAt": "2026-09-16",
+  "ai": "yes"
+}
