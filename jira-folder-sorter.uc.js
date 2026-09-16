@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Jira Folder Sorter
 // @description Automatically organizes Jira tabs into native Zen folders.
-// @version     1.2.0
+// @version     1.3.0
 // ==/UserScript==
 
 (function () {
@@ -19,10 +19,23 @@
 
   const LOG_PREFIX = "[Jira Folder Sorter]";
 
-  /*
-   * Folder names are intentionally NOT prefixed with "Jira:".
-   */
   const MAX_FOLDER_NAME_LENGTH = 70;
+
+  /*
+   * Remember which folder a newly opened tab should inherit.
+   *
+   * This is intentionally separate from the browser's opener
+   * relationship because Jira/Zen can sometimes clear the opener
+   * relationship after the new tab starts navigating.
+   */
+  const pendingParentFolders = new WeakMap();
+
+  /*
+   * Keep track of folders created by this script.
+   * This lets us safely remove empty ones without touching
+   * folders created manually by the user.
+   */
+  const managedFolders = new WeakSet();
 
 
   // ================================================================
@@ -127,8 +140,8 @@
     }
 
     title = title
-      .replace(/\s*[-|]\s*Jira.*$/i, "")
-      .replace(/\s*[-|]\s*Atlassian.*$/i, "")
+      .replace(/\s*[-|–—]\s*Jira.*$/i, "")
+      .replace(/\s*[-|–—]\s*Atlassian.*$/i, "")
       .trim();
 
     title = title
@@ -252,7 +265,73 @@
       current = getOpenerTab(current);
     }
 
-    return null;
+    /*
+     * The opener may already have disappeared by the time Jira
+     * finishes navigation. Check the folder remembered when the
+     * tab was originally opened.
+     */
+    return pendingParentFolders.get(tab) || null;
+  }
+
+
+  // ================================================================
+  // Remember folder when a new tab is opened
+  // ================================================================
+
+  function rememberParentFolder(tab) {
+    if (!tab) {
+      return;
+    }
+
+    /*
+     * First try the actual browser opener.
+     */
+    const openerTab = getOpenerTab(tab);
+
+    if (
+      openerTab &&
+      openerTab.group &&
+      isZenFolder(openerTab.group)
+    ) {
+      pendingParentFolders.set(
+        tab,
+        openerTab.group
+      );
+
+      log(
+        `Remembered parent folder "${openerTab.group.label}" for new tab.`
+      );
+
+      return;
+    }
+
+    /*
+     * Sometimes the opener is exposed a little later.
+     * Try again after the tab has been initialized.
+     */
+    setTimeout(() => {
+      if (!tab || tab.closing) {
+        return;
+      }
+
+      const delayedOpener =
+        getOpenerTab(tab);
+
+      if (
+        delayedOpener &&
+        delayedOpener.group &&
+        isZenFolder(delayedOpener.group)
+      ) {
+        pendingParentFolders.set(
+          tab,
+          delayedOpener.group
+        );
+
+        log(
+          `Remembered parent folder "${delayedOpener.group.label}" for new tab.`
+        );
+      }
+    }, 50);
   }
 
 
@@ -274,20 +353,6 @@
     }
 
     try {
-      /*
-       * IMPORTANT:
-       *
-       * This intentionally mirrors Zen's own
-       * context-menu implementation.
-       *
-       * We do NOT pass workspaceId.
-       * We do NOT manually create a zen-folder.
-       * We do NOT manually create an empty tab.
-       * We do NOT manually pin anything.
-       *
-       * Zen does all of that.
-       */
-
       const folder =
         gZenFolders.createFolder(
           [tab],
@@ -304,15 +369,10 @@
         return null;
       }
 
-      /*
-       * Zen defaults the label to "New Folder".
-       * Set the label using the actual Zen folder object.
-       */
       folder.label = label;
 
-      /*
-       * Force the folder state to be persisted immediately.
-       */
+      managedFolders.add(folder);
+
       try {
         for (const folderTab of folder.tabs) {
           if (
@@ -356,10 +416,6 @@
     }
 
     try {
-      /*
-       * This is the exact operation Zen's own
-       * "Move to Folder" context menu uses.
-       */
       folder.addTabs([tab]);
 
       log(
@@ -391,6 +447,28 @@
     }
 
     /*
+     * If the tab was opened from another tab that belongs
+     * to a Zen folder, ALWAYS inherit that folder.
+     *
+     * This is checked before creating/reusing a folder
+     * for the individual issue.
+     */
+    const parentFolder =
+      findParentFolder(tab);
+
+    if (parentFolder) {
+      if (
+        addToFolder(
+          parentFolder,
+          tab
+        )
+      ) {
+        pendingParentFolders.delete(tab);
+        return;
+      }
+    }
+
+    /*
      * Don't interfere with anything already
      * inside a Zen folder.
      */
@@ -412,30 +490,10 @@
       return;
     }
 
-
-    // --------------------------------------------------------------
-    // Try to inherit the opener's folder.
-    // --------------------------------------------------------------
-
-    const parentFolder =
-      findParentFolder(tab);
-
-    if (parentFolder) {
-      if (
-        addToFolder(
-          parentFolder,
-          tab
-        )
-      ) {
-        return;
-      }
-    }
-
-
-    // --------------------------------------------------------------
-    // Otherwise create/reuse a folder for this issue.
-    // --------------------------------------------------------------
-
+    /*
+     * Otherwise create/reuse a folder for the
+     * first issue in this chain.
+     */
     const title =
       getIssueTitle(
         tab,
@@ -547,6 +605,54 @@
 
 
   // ================================================================
+  // Delete empty managed folders
+  // ================================================================
+
+  function cleanupFolder(folder) {
+    if (
+      !folder ||
+      !folder.isConnected ||
+      !managedFolders.has(folder)
+    ) {
+      return;
+    }
+
+    try {
+      /*
+       * Zen folders contain an internal empty tab.
+       * Only count actual user tabs here.
+       */
+      const realTabs =
+        Array.from(folder.tabs || []).filter(
+          tab =>
+            !tab.hasAttribute(
+              "zen-empty-tab"
+            ) &&
+            !tab._forZenEmptyTab
+        );
+
+      if (realTabs.length > 0) {
+        return;
+      }
+
+      log(
+        `Deleting empty folder "${folder.label}".`
+      );
+
+      managedFolders.delete(folder);
+
+      folder.delete();
+
+    } catch (e) {
+      warn(
+        "Could not clean up empty folder:",
+        e
+      );
+    }
+  }
+
+
+  // ================================================================
   // Navigation listener
   // ================================================================
 
@@ -615,7 +721,32 @@
             );
           } catch {}
 
+          cleanupFolder(
+            tab.group
+          );
+
+          pendingParentFolders.delete(
+            tab
+          );
+
           delete tab._jiraFolderSorterListener;
+
+          /*
+           * Zen may remove the tab from its folder
+           * immediately after TabClose fires, so check
+           * once more after the close has propagated.
+           */
+          setTimeout(() => {
+            cleanupFolder(
+              tab.group
+            );
+
+            for (
+              const folder of getZenFolders()
+            ) {
+              cleanupFolder(folder);
+            }
+          }, 100);
         },
         { once: true }
       );
@@ -641,8 +772,20 @@
       return;
     }
 
+    /*
+     * IMPORTANT:
+     *
+     * Capture the parent folder immediately.
+     * We cannot rely only on openerTab later because Jira
+     * navigation can change the browsing context.
+     */
+    rememberParentFolder(tab);
+
     attachListener(tab);
 
+    /*
+     * If the tab already has a URL, process it.
+     */
     if (
       tab.linkedBrowser?.currentURI &&
       tab.linkedBrowser.currentURI.spec !==
