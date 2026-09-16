@@ -176,7 +176,10 @@
 
     if (!group) {
       try {
-        gBrowser.addTabGroup([tab], { label, color: color || "blue", insertBefore: null });
+        gBrowser.addTabGroup([tab], {
+          label,
+          color: color || "blue"
+        });
         log(`Created folder "${label}"`);
       } catch (e) {
         warn(`Failed to create folder "${label}":`, e);
