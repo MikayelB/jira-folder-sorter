@@ -16,48 +16,44 @@
     "property": "extensions.jira-folder-sorter.group-by",
     "label": "Group tabs by (epic/story need email+token below)",
     "type": "dropdown",
+    "placeholder": "Select a level",
+    "defaultValue": "project",
     "options": [
-      "project",
-      "epic",
-      "story"
-    ],
-    "defaultValue": "project"
+      { "label": "Project (no setup needed)", "value": "project" },
+      { "label": "Epic", "value": "epic" },
+      { "label": "Story", "value": "story" }
+    ]
   },
   {
     "property": "extensions.jira-folder-sorter.group-color",
     "label": "Folder color",
     "type": "dropdown",
+    "placeholder": "Select a color",
+    "defaultValue": "blue",
     "options": [
-      "blue",
-      "purple",
-      "cyan",
-      "orange",
-      "yellow",
-      "pink",
-      "green",
-      "gray",
-      "red"
-    ],
-    "defaultValue": "blue"
+      { "label": "Blue", "value": "blue" },
+      { "label": "Purple", "value": "purple" },
+      { "label": "Cyan", "value": "cyan" },
+      { "label": "Orange", "value": "orange" },
+      { "label": "Yellow", "value": "yellow" },
+      { "label": "Pink", "value": "pink" },
+      { "label": "Green", "value": "green" },
+      { "label": "Gray", "value": "gray" },
+      { "label": "Red", "value": "red" }
+    ]
   },
   {
     "property": "extensions.jira-folder-sorter.jira-email",
-    "label": "Jira account email (only needed for 'epic' grouping, Jira Cloud)",
+    "label": "Jira account email (only used for 'epic'/'story' grouping, Jira Cloud)",
     "type": "string",
     "placeholder": "you@company.com",
-    "defaultValue": "",
-    "disabledOn": {
-      "extensions.jira-folder-sorter.group-by": "project"
-    }
+    "defaultValue": ""
   },
   {
     "property": "extensions.jira-folder-sorter.jira-api-token",
-    "label": "Jira API token (only needed for 'epic' grouping - stored in plain text, see README)",
+    "label": "Jira API token (only used for 'epic'/'story' grouping - stored in plain text, see README)",
     "type": "string",
     "placeholder": "paste API token here",
-    "defaultValue": "",
-    "disabledOn": {
-      "extensions.jira-folder-sorter.group-by": "project"
-    }
+    "defaultValue": ""
   }
 ]
