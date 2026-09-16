@@ -1,70 +1,115 @@
 // ==UserScript==
-	
 // @name        Jira Folder Sorter
-	
 // @description Automatically organizes Jira tabs into native Zen folders.
-	
-// @version     1.4.0
-	
+// @version     1.2.0
 // ==/UserScript==
-	
+
 (function () {
   "use strict";
 
-  const PREF_ENABLED = "extensions.jira-folder-sorter.enabled";
-  const PREF_BASE_URL = "extensions.jira-folder-sorter.jira-base-url";
+  if (location.href !== "chrome://browser/content/browser.xhtml") {
+    return;
+  }
 
-  const managedFolders = new Set();
-  const folderByIssue = new Map();
+  const PREF_ENABLED =
+    "extensions.jira-folder-sorter.enabled";
 
-  function isEnabled() {
+  const PREF_BASE_URL =
+    "extensions.jira-folder-sorter.jira-base-url";
+
+  const LOG_PREFIX = "[Jira Folder Sorter]";
+
+  /*
+   * Folder names are intentionally NOT prefixed with "Jira:".
+   */
+  const MAX_FOLDER_NAME_LENGTH = 70;
+
+
+  // ================================================================
+  // Logging
+  // ================================================================
+
+  function log(...args) {
+    console.log(LOG_PREFIX, ...args);
+  }
+
+  function warn(...args) {
+    console.warn(LOG_PREFIX, ...args);
+  }
+
+
+  // ================================================================
+  // Preferences
+  // ================================================================
+
+  function getBoolPref(name, fallback) {
     try {
-      return Services.prefs.getBoolPref(PREF_ENABLED);
+      return Services.prefs.getBoolPref(name, fallback);
     } catch {
-      return true;
+      return fallback;
     }
   }
 
-  function getBaseUrl() {
+  function getStringPref(name, fallback) {
     try {
-      return Services.prefs
-        .getCharPref(PREF_BASE_URL)
-        .replace(/\/+$/, "");
+      return Services.prefs.getStringPref(name, fallback);
     } catch {
-      return "";
+      return fallback;
     }
   }
 
-  function getTabUrl(tab) {
-    try {
-      return tab?.linkedBrowser?.currentURI?.spec || "";
-    } catch {
-      return "";
+
+  // ================================================================
+  // Jira URL
+  // ================================================================
+
+  function parseJiraUrl(urlString, baseUrlString) {
+    if (!urlString || !baseUrlString) {
+      return null;
     }
-  }
 
-  function getIssueKey(url) {
-    if (!url) return null;
+    let url;
+    let base;
 
-    const match = url.match(
-      /\/browse\/([A-Z][A-Z0-9]+-\d+)/i
+    try {
+      url = new URL(urlString);
+      base = new URL(baseUrlString);
+    } catch {
+      return null;
+    }
+
+    if (url.hostname !== base.hostname) {
+      return null;
+    }
+
+    let match = url.pathname.match(
+      /\/browse\/([A-Z][A-Z0-9_]*-\d+)/i
     );
 
-    return match ? match[1].toUpperCase() : null;
+    if (!match) {
+      match = url.search.match(
+        /[?&]selectedIssue=([A-Z][A-Z0-9_]*-\d+)/i
+      );
+    }
+
+    if (!match) {
+      return null;
+    }
+
+    const issueKey = match[1].toUpperCase();
+
+    return {
+      issueKey,
+      projectKey: issueKey.split("-")[0],
+    };
   }
 
-  function isJiraTab(tab) {
-    const base = getBaseUrl();
-    const url = getTabUrl(tab);
 
-    return !!(
-      base &&
-      url &&
-      url.startsWith(base + "/browse/")
-    );
-  }
+  // ================================================================
+  // Jira title
+  // ================================================================
 
-  function getSummary(tab) {
+  function getIssueTitle(tab, issueKey) {
     let title = "";
 
     try {
@@ -72,104 +117,85 @@
     } catch {}
 
     if (!title) {
-      title = tab.label || "";
+      try {
+        title = tab.label || "";
+      } catch {}
     }
 
-    if (!title) return null;
+    if (!title) {
+      return issueKey;
+    }
 
     title = title
-      .replace(/\s*[-|–—]\s*Jira\s*$/i, "")
-      .replace(/\s+Jira\s*$/i, "")
+      .replace(/\s*[-|]\s*Jira.*$/i, "")
+      .replace(/\s*[-|]\s*Atlassian.*$/i, "")
       .trim();
 
-    const key = getIssueKey(getTabUrl(tab));
+    title = title
+      .replace(
+        new RegExp(
+          `\\b${escapeRegExp(issueKey)}\\b`,
+          "i"
+        ),
+        ""
+      )
+      .replace(/^[\s\-:|]+/, "")
+      .replace(/[\s\-:|]+$/, "")
+      .trim();
 
-    if (key) {
-      title = title
-        .replace(
-          new RegExp(
-            "^" + key + "\\s*[-|:]?\\s*",
-            "i"
-          ),
-          ""
-        )
-        .trim();
-    }
-
-    if (!title || /^Jira$/i.test(title)) {
-      return null;
-    }
-
-    return title;
+    return title || issueKey;
   }
 
-  function getZenFolder(tab) {
-    try {
-      const group = tab?.group;
 
-      if (group && group.isZenFolder) {
-        return group;
-      }
-    } catch {}
-
-    return null;
+  function escapeRegExp(value) {
+    return value.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&"
+    );
   }
 
-  function findParentFolder(tab) {
-    const visited = new Set();
-    let current = tab;
 
-    while (current) {
-      if (visited.has(current)) {
-        break;
-      }
+  // ================================================================
+  // Folder name
+  // ================================================================
 
-      visited.add(current);
+  function makeFolderName(issueKey, title) {
+    let name = `${issueKey} ${title}`.trim();
 
-      const folder = getZenFolder(current);
-
-      if (folder && managedFolders.has(folder)) {
-        return folder;
-      }
-
-      current =
-        current.openerTab ||
-        current.ownerTab ||
-        null;
+    if (name.length > MAX_FOLDER_NAME_LENGTH) {
+      name =
+        name.slice(
+          0,
+          MAX_FOLDER_NAME_LENGTH - 3
+        ) + "...";
     }
 
-    return null;
+    return name;
   }
 
-  function findManagedFolder(issueKey) {
-    if (!issueKey) return null;
 
-    const cached = folderByIssue.get(issueKey);
+  // ================================================================
+  // Zen folder detection
+  // ================================================================
 
-    if (
-      cached &&
-      cached.isConnected &&
-      cached.isZenFolder
-    ) {
-      return cached;
-    }
+  function getZenFolders() {
+    return Array.from(
+      document.querySelectorAll("zen-folder")
+    );
+  }
 
-    folderByIssue.delete(issueKey);
 
-    for (const folder of document.querySelectorAll(
-      "zen-folder"
-    )) {
-      if (!folder.isZenFolder) continue;
+  function isZenFolder(folder) {
+    return !!folder?.isZenFolder;
+  }
 
+
+  function findFolder(label) {
+    for (const folder of getZenFolders()) {
       if (
-        folder.getAttribute("data-jira-folder") ===
-          "true" &&
-        folder.getAttribute("data-jira-issue") ===
-          issueKey
+        isZenFolder(folder) &&
+        folder.label === label
       ) {
-        managedFolders.add(folder);
-        folderByIssue.set(issueKey, folder);
-
         return folder;
       }
     }
@@ -177,285 +203,480 @@
     return null;
   }
 
-  function createFolder(tab, issueKey) {
-    if (
-      typeof gZenFolders === "undefined" ||
-      !gZenFolders ||
-      !tab
-    ) {
-      return null;
-    }
 
-    const summary = getSummary(tab);
+  // ================================================================
+  // Opener detection
+  // ================================================================
 
-    const label = summary
-      ? `${issueKey} ${summary}`
-      : issueKey;
-
+  function getOpenerTab(tab) {
     try {
-      const folder = gZenFolders.createFolder(
-        [tab],
-        {
-          label: label,
-          renameFolder: false,
-          saveOnWindowClose: false
-        }
-      );
+      const openerBrowser =
+        tab.linkedBrowser
+          ?.frameLoader
+          ?.browsingContext
+          ?.opener
+          ?.top
+          ?.embedderElement;
 
-      if (!folder) {
+      if (!openerBrowser) {
         return null;
       }
 
-      folder.setAttribute(
-        "data-jira-folder",
-        "true"
+      return gBrowser.getTabForBrowser(
+        openerBrowser
+      );
+    } catch {
+      return null;
+    }
+  }
+
+
+  function findParentFolder(tab) {
+    const visited = new Set();
+
+    let current = getOpenerTab(tab);
+
+    while (
+      current &&
+      !visited.has(current)
+    ) {
+      visited.add(current);
+
+      if (
+        current.group &&
+        isZenFolder(current.group)
+      ) {
+        return current.group;
+      }
+
+      current = getOpenerTab(current);
+    }
+
+    return null;
+  }
+
+
+  // ================================================================
+  // REAL ZEN FOLDER CREATION
+  // ================================================================
+
+  function createFolder(tab, label) {
+    if (
+      typeof gZenFolders === "undefined" ||
+      !gZenFolders ||
+      typeof gZenFolders.createFolder !== "function"
+    ) {
+      warn(
+        "Zen folder API is unavailable."
       );
 
-      folder.setAttribute(
-        "data-jira-issue",
-        issueKey
-      );
+      return null;
+    }
 
-      managedFolders.add(folder);
-      folderByIssue.set(issueKey, folder);
+    try {
+      /*
+       * IMPORTANT:
+       *
+       * This intentionally mirrors Zen's own
+       * context-menu implementation.
+       *
+       * We do NOT pass workspaceId.
+       * We do NOT manually create a zen-folder.
+       * We do NOT manually create an empty tab.
+       * We do NOT manually pin anything.
+       *
+       * Zen does all of that.
+       */
 
-      updateFolderNameWhenReady(
-        tab,
-        folder,
-        issueKey
+      const folder =
+        gZenFolders.createFolder(
+          [tab],
+          {
+            renameFolder: false,
+          }
+        );
+
+      if (!folder) {
+        warn(
+          "Zen returned no folder."
+        );
+
+        return null;
+      }
+
+      /*
+       * Zen defaults the label to "New Folder".
+       * Set the label using the actual Zen folder object.
+       */
+      folder.label = label;
+
+      /*
+       * Force the folder state to be persisted immediately.
+       */
+      try {
+        for (const folderTab of folder.tabs) {
+          if (
+            folderTab.linkedBrowser
+          ) {
+            gBrowser.TabStateFlusher.flush(
+              folderTab.linkedBrowser
+            );
+          }
+        }
+      } catch {}
+
+      log(
+        `Created Zen folder "${label}".`
       );
 
       return folder;
-    } catch (error) {
-      console.error(
-        "[Jira Folder Sorter] createFolder failed:",
-        error
+
+    } catch (e) {
+      warn(
+        "Zen folder creation failed:",
+        e
       );
 
       return null;
     }
   }
 
-  function updateFolderNameWhenReady(
-    tab,
-    folder,
-    issueKey
-  ) {
-    let attempts = 0;
 
-    const update = () => {
-      if (
-        !tab?.isConnected ||
-        !folder?.isConnected
-      ) {
-        return;
-      }
+  // ================================================================
+  // Add tab to existing Zen folder
+  // ================================================================
 
-      const summary = getSummary(tab);
-
-      if (summary) {
-        folder.label =
-          `${issueKey} ${summary}`;
-        return;
-      }
-
-      attempts++;
-
-      if (attempts < 40) {
-        setTimeout(update, 500);
-      }
-    };
-
-    update();
-  }
-
-  function moveToFolder(tab, folder) {
+  function addToFolder(folder, tab) {
     if (
-      !tab ||
       !folder ||
-      !folder.isZenFolder
+      !tab ||
+      !isZenFolder(folder)
     ) {
-      return;
-    }
-
-    if (tab.group === folder) {
-      return;
+      return false;
     }
 
     try {
+      /*
+       * This is the exact operation Zen's own
+       * "Move to Folder" context menu uses.
+       */
       folder.addTabs([tab]);
-    } catch (error) {
-      console.error(
-        "[Jira Folder Sorter] addTabs failed:",
-        error
+
+      log(
+        `Moved "${tab.label}" into "${folder.label}".`
       );
+
+      return true;
+    } catch (e) {
+      warn(
+        "Could not add tab to Zen folder:",
+        e
+      );
+
+      return false;
     }
   }
 
-  function processTab(tab) {
-    if (!tab || !isEnabled()) {
-      return;
-    }
 
-    if (!isJiraTab(tab)) {
-      return;
-    }
+  // ================================================================
+  // Organize Jira tab
+  // ================================================================
 
-    const issueKey = getIssueKey(
-      getTabUrl(tab)
-    );
-
-    if (!issueKey) {
+  function organizeTab(tab, issueKey) {
+    if (
+      !tab ||
+      tab.closing
+    ) {
       return;
     }
 
     /*
-     * First priority:
-     * If this tab was opened from a tab already inside
-     * one of our Jira folders, reuse that folder.
+     * Don't interfere with anything already
+     * inside a Zen folder.
      */
+    if (
+      tab.group &&
+      isZenFolder(tab.group)
+    ) {
+      return;
+    }
+
+    /*
+     * Don't interfere with ordinary tab groups
+     * created by the user.
+     */
+    if (
+      tab.group &&
+      !isZenFolder(tab.group)
+    ) {
+      return;
+    }
+
+
+    // --------------------------------------------------------------
+    // Try to inherit the opener's folder.
+    // --------------------------------------------------------------
+
     const parentFolder =
       findParentFolder(tab);
 
     if (parentFolder) {
-      moveToFolder(tab, parentFolder);
+      if (
+        addToFolder(
+          parentFolder,
+          tab
+        )
+      ) {
+        return;
+      }
+    }
+
+
+    // --------------------------------------------------------------
+    // Otherwise create/reuse a folder for this issue.
+    // --------------------------------------------------------------
+
+    const title =
+      getIssueTitle(
+        tab,
+        issueKey
+      );
+
+    const folderName =
+      makeFolderName(
+        issueKey,
+        title
+      );
+
+    let folder =
+      findFolder(folderName);
+
+    if (folder) {
+      addToFolder(
+        folder,
+        tab
+      );
+
       return;
     }
 
-    /*
-     * Second priority:
-     * Reuse an existing folder for the same issue.
-     */
-    const existingFolder =
-      findManagedFolder(issueKey);
-
-    if (existingFolder) {
-      moveToFolder(tab, existingFolder);
-      return;
-    }
-
-    /*
-     * Otherwise create a brand-new Jira folder.
-     */
-    createFolder(tab, issueKey);
+    createFolder(
+      tab,
+      folderName
+    );
   }
 
-  function cleanupFolder(folder) {
+
+  // ================================================================
+  // Handle Jira tab
+  // ================================================================
+
+  async function handleTab(tab) {
     if (
-      !folder ||
-      !folder.isConnected ||
-      !managedFolders.has(folder)
+      !getBoolPref(
+        PREF_ENABLED,
+        true
+      )
     ) {
       return;
     }
 
-    const tabs = Array.from(
-      folder.tabs || []
+    if (
+      !tab ||
+      tab.closing
+    ) {
+      return;
+    }
+
+    const browser =
+      tab.linkedBrowser;
+
+    if (
+      !browser ||
+      !browser.currentURI
+    ) {
+      return;
+    }
+
+    const url =
+      browser.currentURI.spec;
+
+    if (
+      !url ||
+      url === "about:blank"
+    ) {
+      return;
+    }
+
+    const baseUrl =
+      getStringPref(
+        PREF_BASE_URL,
+        ""
+      );
+
+    if (!baseUrl) {
+      return;
+    }
+
+    const parsed =
+      parseJiraUrl(
+        url,
+        baseUrl
+      );
+
+    if (!parsed) {
+      return;
+    }
+
+    /*
+     * Jira is a SPA, so wait for the title to settle.
+     */
+    await new Promise(resolve =>
+      setTimeout(resolve, 700)
     );
 
-    const realTabs = tabs.filter(tab => {
-      return !tab.hasAttribute(
-        "zen-empty-tab"
-      );
-    });
-
-    if (realTabs.length > 0) {
+    if (tab.closing) {
       return;
     }
 
-    const issueKey =
-      folder.getAttribute(
-        "data-jira-issue"
-      );
+    organizeTab(
+      tab,
+      parsed.issueKey
+    );
+  }
 
-    if (issueKey) {
-      folderByIssue.delete(issueKey);
+
+  // ================================================================
+  // Navigation listener
+  // ================================================================
+
+  function attachListener(tab) {
+    if (!tab) {
+      return;
     }
 
-    managedFolders.delete(folder);
+    const browser =
+      tab.linkedBrowser;
 
-    try {
-      folder.delete();
-    } catch (error) {
-      console.error(
-        "[Jira Folder Sorter] folder.delete failed:",
-        error
-      );
+    if (!browser) {
+      return;
     }
-  }
-
-  function onTabOpen(event) {
-    const tab = event.target;
-
-    setTimeout(() => {
-      processTab(tab);
-    }, 500);
-  }
-
-  function onTabSelect(event) {
-    const tab = event.target;
-
-    setTimeout(() => {
-      processTab(tab);
-    }, 300);
-  }
-
-  function onTabClose(event) {
-    const tab = event.target;
-
-    let folder = null;
-
-    try {
-      folder = tab.group;
-    } catch {}
 
     if (
-      !folder ||
-      !folder.isZenFolder ||
-      !managedFolders.has(folder)
+      tab._jiraFolderSorterListener
     ) {
       return;
     }
 
-    setTimeout(() => {
-      cleanupFolder(folder);
-    }, 100);
+    const listener = {
+      QueryInterface:
+        ChromeUtils.generateQI([
+          "nsIWebProgressListener",
+          "nsISupportsWeakReference",
+        ]),
+
+      onLocationChange(
+        webProgress
+      ) {
+        if (
+          !webProgress.isTopLevel
+        ) {
+          return;
+        }
+
+        setTimeout(
+          () => handleTab(tab),
+          500
+        );
+      },
+
+      onStateChange() {},
+      onProgressChange() {},
+      onStatusChange() {},
+      onSecurityChange() {},
+      onContentBlockingEvent() {},
+    };
+
+    try {
+      browser.addProgressListener(
+        listener,
+        Ci.nsIWebProgress.NOTIFY_LOCATION
+      );
+
+      tab._jiraFolderSorterListener =
+        listener;
+
+      tab.addEventListener(
+        "TabClose",
+        () => {
+          try {
+            browser.removeProgressListener(
+              listener
+            );
+          } catch {}
+
+          delete tab._jiraFolderSorterListener;
+        },
+        { once: true }
+      );
+
+    } catch (e) {
+      warn(
+        "Could not attach listener:",
+        e
+      );
+    }
   }
 
-  function onLocationChange(event) {
-    const browser = event.target;
 
-    if (!browser) return;
+  // ================================================================
+  // New tab
+  // ================================================================
 
+  function onTabOpen(event) {
     const tab =
-      gBrowser.getTabForBrowser(browser);
+      event.target;
 
-    if (!tab) return;
+    if (!tab) {
+      return;
+    }
 
-    setTimeout(() => {
-      processTab(tab);
-    }, 500);
+    attachListener(tab);
+
+    if (
+      tab.linkedBrowser?.currentURI &&
+      tab.linkedBrowser.currentURI.spec !==
+        "about:blank"
+    ) {
+      setTimeout(
+        () => handleTab(tab),
+        700
+      );
+    }
   }
+
+
+  // ================================================================
+  // Init
+  // ================================================================
 
   function init() {
     if (
-      typeof gBrowser === "undefined" ||
-      !gBrowser
+      !gBrowser ||
+      !gBrowser.tabContainer
     ) {
       return;
     }
 
-    if (
-      gBrowser.tabContainer.__jiraFolderSorterLoaded
-    ) {
-      return;
-    }
+    log(
+      "Jira Folder Sorter starting..."
+    );
 
-    gBrowser.tabContainer.__jiraFolderSorterLoaded =
-      true;
-
-    console.log(
-      "[Jira Folder Sorter] initialized"
+    log(
+      "gZenFolders:",
+      typeof gZenFolders !== "undefined"
+        ? "available"
+        : "NOT AVAILABLE"
     );
 
     gBrowser.tabContainer.addEventListener(
@@ -463,28 +684,32 @@
       onTabOpen
     );
 
-    gBrowser.tabContainer.addEventListener(
-      "TabSelect",
-      onTabSelect
-    );
+    for (
+      const tab of gBrowser.tabs
+    ) {
+      attachListener(tab);
 
-    gBrowser.tabContainer.addEventListener(
-      "TabClose",
-      onTabClose
-    );
-
-    gBrowser.addEventListener(
-      "DOMWindowCreated",
-      () => {},
-      true
-    );
-
-    for (const tab of gBrowser.tabs) {
-      setTimeout(() => {
-        processTab(tab);
-      }, 1000);
+      if (
+        tab.linkedBrowser?.currentURI &&
+        tab.linkedBrowser.currentURI.spec !==
+          "about:blank"
+      ) {
+        setTimeout(
+          () => handleTab(tab),
+          700
+        );
+      }
     }
+
+    log(
+      "initialized."
+    );
   }
+
+
+  // ================================================================
+  // Wait for Zen startup
+  // ================================================================
 
   if (
     typeof gBrowserInit !== "undefined" &&
@@ -492,12 +717,24 @@
   ) {
     init();
   } else {
-    window.addEventListener(
-      "browser-delayed-startup-finished",
-      () => {
+    const observer = (
+      subject,
+      topic
+    ) => {
+      if (subject === window) {
+        Services.obs.removeObserver(
+          observer,
+          topic
+        );
+
         init();
-      },
-      { once: true }
+      }
+    };
+
+    Services.obs.addObserver(
+      observer,
+      "browser-delayed-startup-finished"
     );
   }
+
 })();
